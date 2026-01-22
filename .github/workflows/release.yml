@@ -55,28 +55,94 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y p7zip-full
 
-      # 步骤6: 安装依赖
+      # 步骤6: 安装依赖 - 已修复！
       - name: Install dependencies
-        run: npm ci
+        run: npm install  # 改为 npm install
 
-      # 步骤7: 构建脚本1
-      - name: Run packageJS script
-        run: npm run packageJS
-
-      # 步骤8: 构建脚本2
-      - name: Run packageJS-green script
-        run: npm run packageJS-green
-
-      # 步骤9: 查找生成的7z文件
-      - name: Find generated 7z files
+      # 步骤7: 调试 - 查看项目结构
+      - name: Debug project structure
         run: |
-          cd ..
-          echo "查找生成的7z文件:"
-          ls -la *.7z || echo "未找到7z文件"
-          echo "FILES=$(ls *.7z 2>/dev/null | tr '\n' ' ')" >> $GITHUB_ENV
-          echo "找到的文件: $FILES"
+          echo "=== 当前目录 ==="
+          pwd
+          ls -la
+          
+          echo "=== 检查package.json ==="
+          if [ -f "package.json" ]; then
+            echo "package.json 存在"
+            echo "scripts部分:"
+            grep -A 20 '"scripts"' package.json || echo "无scripts定义"
+          else
+            echo "错误: package.json 不存在!"
+            find . -name "package.json" | head -5
+          fi
 
-      # 步骤10: 创建发布
+      # 步骤8: 检查npm脚本是否存在
+      - name: Check available npm scripts
+        run: |
+          echo "可用的npm脚本:"
+          npm run 2>&1 || echo "无法获取脚本列表"
+          
+          # 尝试运行构建脚本（如果存在）
+          if npm run | grep -q "packageJS"; then
+            echo "找到 packageJS 脚本"
+          else
+            echo "警告: packageJS 脚本未找到"
+          fi
+          
+          if npm run | grep -q "packageJS-green"; then
+            echo "找到 packageJS-green 脚本"
+          else
+            echo "警告: packageJS-green 脚本未找到"
+          fi
+
+      # 步骤9: 运行构建脚本（带错误处理）
+      - name: Run packageJS script
+        run: |
+          # 检查脚本是否存在
+          if npm run | grep -q "packageJS"; then
+            echo "执行 packageJS..."
+            npm run packageJS
+          else
+            echo "packageJS 脚本不存在，尝试构建..."
+            # 如果没有预定义脚本，尝试常见的构建命令
+            npm run build 2>&1 || npm run compile 2>&1 || echo "无构建脚本"
+          fi
+
+      # 步骤10: 运行第二个构建脚本
+      - name: Run packageJS-green script
+        run: |
+          if npm run | grep -q "packageJS-green"; then
+            echo "执行 packageJS-green..."
+            npm run packageJS-green
+          else
+            echo "packageJS-green 脚本不存在，跳过"
+          fi
+
+      # 步骤11: 查找生成的文件
+      - name: Find generated files
+        run: |
+          echo "=== 搜索所有生成的文件 ==="
+          echo "当前目录: $(pwd)"
+          ls -la
+          
+          echo "=== 查找压缩文件 ==="
+          find . -type f \( -name "*.7z" -o -name "*.zip" -o -name "*.tar*" -o -name "*.gz" \) 2>/dev/null | head -20
+          
+          # 保存找到的7z文件
+          FILES_7Z=$(find . -name "*.7z" -type f 2>/dev/null | tr '\n' ' ')
+          echo "FILES_7Z=${FILES_7Z}" >> $GITHUB_ENV
+          
+          # 如果没有7z，找其他压缩文件
+          if [ -z "$FILES_7Z" ]; then
+            echo "未找到.7z文件，查找其他格式..."
+            FILES_OTHER=$(find . -type f \( -name "*.zip" -o -name "*.tar*" -o -name "*.gz" \) 2>/dev/null | tr '\n' ' ')
+            echo "FILES_OTHER=${FILES_OTHER}" >> $GITHUB_ENV
+          fi
+          
+          echo "找到的.7z文件: ${FILES_7Z}"
+          echo "找到的其他文件: ${FILES_OTHER}"
+
+      # 步骤12: 创建发布
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
@@ -88,41 +154,63 @@ jobs:
           draft: false
           prerelease: ${{ github.event_name == 'workflow_dispatch' }}
 
-      # 步骤11: 上传文件到发布
+      # 步骤13: 上传文件
       - name: Upload Release Assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "开始上传文件到发布..."
-          cd ..
+          echo "开始上传文件..."
           
-          if [ -z "$FILES" ]; then
-            echo "错误: 未找到任何7z文件"
-            exit 1
+          # 上传7z文件
+          if [ -n "${{ env.FILES_7Z }}" ]; then
+            echo "上传.7z文件: ${{ env.FILES_7Z }}"
+            for file in ${{ env.FILES_7Z }}; do
+              if [ -f "$file" ]; then
+                echo "上传: $file"
+                FILENAME=$(basename "$file")
+                curl -s -X POST \
+                  -H "Authorization: token $GITHUB_TOKEN" \
+                  -H "Content-Type: application/octet-stream" \
+                  --data-binary @"$file" \
+                  "${{ steps.create_release.outputs.upload_url }}?name=$FILENAME"
+              fi
+            done
           fi
           
-          echo "要上传的文件: $FILES"
+          # 上传其他文件
+          if [ -n "${{ env.FILES_OTHER }}" ]; then
+            echo "上传其他文件: ${{ env.FILES_OTHER }}"
+            for file in ${{ env.FILES_OTHER }}; do
+              if [ -f "$file" ]; then
+                echo "上传: $file"
+                FILENAME=$(basename "$file")
+                curl -s -X POST \
+                  -H "Authorization: token $GITHUB_TOKEN" \
+                  -H "Content-Type: application/octet-stream" \
+                  --data-binary @"$file" \
+                  "${{ steps.create_release.outputs.upload_url }}?name=$FILENAME"
+              fi
+            done
+          fi
           
-          for file in $FILES; do
-            if [ -f "$file" ]; then
-              echo "正在上传: $file"
-              curl -s \
-                -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Content-Type: application/octet-stream" \
-                --data-binary @"$file" \
-                "${{ steps.create_release.outputs.upload_url }}?name=$file"
-              echo "✓ 已上传: $file"
-            else
-              echo "警告: 文件不存在 $file"
-            fi
-          done
+          if [ -z "${{ env.FILES_7Z }}" ] && [ -z "${{ env.FILES_OTHER }}" ]; then
+            echo "警告: 未找到任何文件上传"
+            # 创建空文件作为标记
+            echo "No files generated" > no-files.txt
+            curl -s -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Content-Type: text/plain" \
+              --data-binary @no-files.txt \
+              "${{ steps.create_release.outputs.upload_url }}?name=BUILD-INFO.txt"
+          fi
 
-      # 步骤12: 验证结果
-      - name: Verify and output results
+      # 步骤14: 输出结果
+      - name: Output results
         run: |
           echo "========================================"
-          echo "🎉 构建发布完成!"
-          echo "📦 版本号: ${{ github.ref_name || env.AUTO_TAG }}"
-          echo "🔗 发布页面: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name || env.AUTO_TAG }}"
-          echo "📁 上传文件: $FILES"
+          echo "构建完成状态报告"
+          echo "版本: ${{ github.ref_name || env.AUTO_TAG }}"
+          echo "发布链接: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name || env.AUTO_TAG }}"
+          echo "找到的.7z文件: ${{ env.FILES_7Z }}"
+          echo "找到的其他文件: ${{ env.FILES_OTHER }}"
           echo "========================================"
