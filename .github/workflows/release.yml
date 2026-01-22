@@ -3,13 +3,8 @@ name: build-and-release
 on:
   push:
     tags:
-      - 'v*'  # 推送 tag 时自动触发
-  workflow_dispatch:  # 添加手动触发
-    inputs:
-      tag_name:
-        description: 'Tag name (格式: v1.0.0)'
-        required: true
-        default: 'v1.0.0'
+      - 'v*'  # 推送正式版本tag时触发
+  workflow_dispatch: {}  # 无参数手动触发
 
 env:
   NODE_VERSION: '22'
@@ -21,65 +16,113 @@ jobs:
       contents: write
 
     steps:
+      # 步骤1: 手动触发时自动生成版本号
+      - name: Generate auto version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          # 生成自动版本号，格式：v20250122.150530
+          AUTO_TAG="v$(date +'%Y%m%d.%H%M%S')"
+          echo "AUTO_TAG=${AUTO_TAG}" >> $GITHUB_ENV
+          echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+          echo "自动生成版本号: ${AUTO_TAG}"
+
+      # 步骤2: 检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.ref_name || github.event.inputs.tag_name }}  # 支持手动指定的 tag
 
+      # 步骤3: 手动触发时创建git tag
+      - name: Create auto tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ env.AUTO_TAG }}
+          git push origin ${{ env.AUTO_TAG }}
+          echo "已创建并推送标签: ${{ env.AUTO_TAG }}"
+
+      # 步骤4: 设置Node.js环境
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
+      # 步骤5: 安装7zip
       - name: Install 7zip
         run: |
           sudo apt-get update
           sudo apt-get install -y p7zip-full
 
+      # 步骤6: 安装依赖
       - name: Install dependencies
         run: npm ci
 
+      # 步骤7: 构建脚本1
       - name: Run packageJS script
         run: npm run packageJS
 
+      # 步骤8: 构建脚本2
       - name: Run packageJS-green script
         run: npm run packageJS-green
 
+      # 步骤9: 查找生成的7z文件
       - name: Find generated 7z files
         run: |
           cd ..
-          echo "Generated files:"
-          ls -la *.7z || echo "No 7z files found"
+          echo "查找生成的7z文件:"
+          ls -la *.7z || echo "未找到7z文件"
           echo "FILES=$(ls *.7z 2>/dev/null | tr '\n' ' ')" >> $GITHUB_ENV
+          echo "找到的文件: $FILES"
 
-      - name: Create or Get Release
+      # 步骤10: 创建发布
+      - name: Create Release
         id: create_release
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref_name || github.event.inputs.tag_name }}
-          release_name: Release ${{ github.ref_name || github.event.inputs.tag_name }}
+          tag_name: ${{ github.ref_name || env.AUTO_TAG }}
+          release_name: Release ${{ github.ref_name || env.AUTO_TAG }}
           draft: false
-          prerelease: false
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
 
+      # 步骤11: 上传文件到发布
       - name: Upload Release Assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          echo "开始上传文件到发布..."
           cd ..
+          
+          if [ -z "$FILES" ]; then
+            echo "错误: 未找到任何7z文件"
+            exit 1
+          fi
+          
+          echo "要上传的文件: $FILES"
+          
           for file in $FILES; do
-            echo "Uploading $file..."
-            curl -s \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary @"$file" \
-              "${{ steps.create_release.outputs.upload_url }}?name=$file"
-            echo "Uploaded $file"
+            if [ -f "$file" ]; then
+              echo "正在上传: $file"
+              curl -s \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary @"$file" \
+                "${{ steps.create_release.outputs.upload_url }}?name=$file"
+              echo "✓ 已上传: $file"
+            else
+              echo "警告: 文件不存在 $file"
+            fi
           done
 
-      - name: Verify upload
+      # 步骤12: 验证结果
+      - name: Verify and output results
         run: |
-          echo "Uploaded files: $FILES"
+          echo "========================================"
+          echo "🎉 构建发布完成!"
+          echo "📦 版本号: ${{ github.ref_name || env.AUTO_TAG }}"
+          echo "🔗 发布页面: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name || env.AUTO_TAG }}"
+          echo "📁 上传文件: $FILES"
+          echo "========================================"
