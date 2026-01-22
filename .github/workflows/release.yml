@@ -3,22 +3,29 @@ name: build-and-release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*'  # 推送 tag 时自动触发
+  workflow_dispatch:  # 添加手动触发
+    inputs:
+      tag_name:
+        description: 'Tag name (格式: v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 env:
-  NODE_VERSION: '22'  # 使用 Node.js 22 版本
+  NODE_VERSION: '22'
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 需要写入权限来创建发布
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 获取所有历史记录
+          fetch-depth: 0
+          ref: ${{ github.ref_name || github.event.inputs.tag_name }}  # 支持手动指定的 tag
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -42,21 +49,19 @@ jobs:
 
       - name: Find generated 7z files
         run: |
-          # 在上级目录查找生成的 7z 文件
           cd ..
           echo "Generated files:"
           ls -la *.7z || echo "No 7z files found"
-          # 将文件列表保存到环境变量中
           echo "FILES=$(ls *.7z 2>/dev/null | tr '\n' ' ')" >> $GITHUB_ENV
 
-      - name: Create Release
+      - name: Create or Get Release
         id: create_release
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name || github.event.inputs.tag_name }}
+          release_name: Release ${{ github.ref_name || github.event.inputs.tag_name }}
           draft: false
           prerelease: false
 
@@ -64,9 +69,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 切换到上级目录
           cd ..
-          # 上传所有找到的 7z 文件
           for file in $FILES; do
             echo "Uploading $file..."
             curl -s \
